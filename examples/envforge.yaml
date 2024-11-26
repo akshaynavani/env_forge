@@ -1,0 +1,48 @@
+# Example manifest for a small multi-team monorepo.
+version: 1
+project: acme-platform
+python: "3.11"
+# "pypi" queries https://pypi.org; a path points to an offline index file.
+index: offline-index.yaml
+
+defaults:
+  provisioner: venv
+  env:
+    PYTHONDONTWRITEBYTECODE: "1"
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+components:
+  common:
+    path: libs/common
+    owner: team-platform
+    requirements:
+      - "requests>=2.28,<3"
+    test: "python -m pytest -q"
+
+  api:
+    path: services/api
+    owner: team-payments
+    depends_on: [common]
+    requirements_files: [requirements.txt]
+    system: [git]
+    env:
+      APP_ENV: test
+    setup:
+      - "python -m compileall -q ."
+    test: "python -m pytest -q"
+
+  worker:
+    path: services/worker
+    owner: team-data
+    provisioner: docker
+    image: "python:3.11-slim"
+    depends_on: [common]
+    requirements:
+      - "requests>=2.31"
+      - "pyyaml>=6"
+    test: "python -m pytest -q"
+
+ci:
+  providers: [github, gitlab]
+  python_versions: ["3.11"]
+  os: [ubuntu-latest]
