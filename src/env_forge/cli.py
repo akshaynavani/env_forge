@@ -2,12 +2,16 @@
 
 import argparse
 import json
+import os
 import sys
 
 from env_forge import __version__
 from env_forge import log as logmod
 from env_forge.errors import EnvForgeError
+from env_forge import paths
 from env_forge.manifest import load_manifest
+from env_forge.resolver import lockfile
+from env_forge.resolver.index import build_index
 
 log = logmod.get_logger("cli")
 
@@ -50,6 +54,59 @@ def cmd_show(args):
     return 0
 
 
+def cmd_lock(args):
+    manifest = load_manifest(args.manifest)
+    path = lockfile.lock_path(manifest)
+
+    if args.check:
+        lock = lockfile.load_lock(path)
+        lockfile.ensure_fresh(manifest, lock)
+        print("ok: {} is up to date".format(path))
+        return 0
+
+    for name in args.components:
+        manifest.component(name)  # validate early
+    previous = None
+    if args.components and os.path.isfile(path):
+        previous = lockfile.load_lock(path)
+
+    cache = None if args.no_cache else paths.index_cache_dir()
+    index = build_index(manifest.index, manifest.root, cache_dir=cache)
+    lock = lockfile.build_lock(manifest, index, args.components, previous, args.platform)
+    if args.dry_run:
+        print(json.dumps(lock, indent=2, sort_keys=True))
+        return 0
+    lockfile.write_lock(path, lock)
+    print("wrote {}".format(path))
+    _print_drift(lock)
+    return 0
+
+
+def _print_drift(lock):
+    drift = lockfile.drift_report(lock)
+    if not drift:
+        return
+    print("version drift across components (isolated envs, but worth aligning):")
+    for pkg, versions in drift.items():
+        detail = "; ".join("{} -> {}".format(v, ",".join(sorted(c))) for v, c in sorted(versions.items()))
+        print("  {}: {}".format(pkg, detail))
+
+
+def cmd_export(args):
+    manifest = load_manifest(args.manifest)
+    manifest.component(args.component)
+    lock = lockfile.load_lock(lockfile.lock_path(manifest))
+    lockfile.ensure_fresh(manifest, lock)
+    text = "\n".join(lockfile.pinned_requirements(lock, args.component)) + "\n"
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote {}".format(args.output))
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -77,6 +134,20 @@ def build_parser():
     p.add_argument("components", nargs="*")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("lock", help="resolve dependencies and write envforge.lock")
+    p.add_argument("components", nargs="*", help="only re-lock these components")
+    p.add_argument("--check", action="store_true",
+                   help="fail if the lockfile is missing or stale (for CI)")
+    p.add_argument("--platform", default="linux", choices=["linux", "darwin", "win32"],
+                   help="target platform for environment markers")
+    p.add_argument("--no-cache", action="store_true", help="bypass the index cache")
+    p.set_defaults(func=cmd_lock)
+
+    p = sub.add_parser("export", help="print pinned requirements for a component")
+    p.add_argument("component")
+    p.add_argument("-o", "--output")
+    p.set_defaults(func=cmd_export)
 
     return parser
 
