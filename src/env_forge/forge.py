@@ -53,7 +53,8 @@ class EnvForge:
         return EnvSpec(
             project=m.project,
             component=comp.name,
-            python=m.python_for(comp),
+            # CI matrices can test against other interpreters than the manifest default
+            python=os.environ.get("ENVFORGE_PYTHON_OVERRIDE") or m.python_for(comp),
             requirements=lockfile.pinned_requirements(self.lock, comp.name),
             workdir=os.path.normpath(os.path.join(m.root, comp.path)),
             root=m.root,
