@@ -9,7 +9,9 @@ from env_forge import __version__
 from env_forge import log as logmod
 from env_forge.errors import EnvForgeError
 from env_forge import paths
+from env_forge.forge import EnvForge
 from env_forge.manifest import load_manifest
+from env_forge.runner import Runner
 from env_forge.resolver import lockfile
 from env_forge.resolver.index import build_index
 
@@ -107,6 +109,88 @@ def cmd_export(args):
     return 0
 
 
+def _forge(args, manifest):
+    runner = Runner(dry_run=args.dry_run)
+    if getattr(args, "relock", False):
+        path = lockfile.lock_path(manifest)
+        lock = lockfile.load_lock(path) if os.path.isfile(path) else None
+        if lock is None or not lockfile.is_fresh(manifest, lock):
+            log.info("lockfile missing or stale; re-resolving")
+            index = build_index(manifest.index, manifest.root, cache_dir=paths.index_cache_dir())
+            lock = lockfile.build_lock(manifest, index)
+            if not args.dry_run:
+                lockfile.write_lock(path, lock)
+        return EnvForge(manifest, runner, lock=lock)
+    return EnvForge(manifest, runner)
+
+
+def cmd_up(args):
+    manifest = load_manifest(args.manifest)
+    forge = _forge(args, manifest)
+    names = args.components or sorted(manifest.components)
+    for name in names:
+        rec = forge.up(name, recreate=args.recreate)
+        print("{:<20} {:<8} {}".format(name, rec.provisioner, rec.location))
+    return 0
+
+
+def cmd_down(args):
+    manifest = load_manifest(args.manifest)
+    forge = EnvForge(manifest, Runner(dry_run=args.dry_run), lock={}, require_fresh_lock=False)
+    if not args.all and not args.components:
+        raise EnvForgeError("name a component or pass --all")
+    removed = []
+    if args.all:
+        removed = forge.down(all_envs=True)
+    else:
+        for name in args.components:
+            removed += forge.down(name)
+    print("removed {} environment(s)".format(len(removed)))
+    return 0
+
+
+def cmd_list(args):
+    manifest = load_manifest(args.manifest)
+    forge = EnvForge(manifest, Runner(), lock={}, require_fresh_lock=False)
+    records = forge.state.all()
+    if args.json:
+        print(json.dumps([r.__dict__ for r in records], indent=2))
+        return 0
+    if not records:
+        print("no environments provisioned")
+        return 0
+    print("{:<16} {:<8} {:<8} {:<7} {}".format("COMPONENT", "BACKEND", "PYTHON", "STATUS", "ENV"))
+    for r in records:
+        print("{:<16} {:<8} {:<8} {:<7} {}".format(
+            r.component, r.provisioner, r.python, r.status, r.env_id))
+    return 0
+
+
+def cmd_run(args):
+    manifest = load_manifest(args.manifest)
+    forge = _forge(args, manifest)
+    command = args.cmd
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise EnvForgeError("no command given (usage: envforge run <component> -- <cmd>)")
+    return forge.run(args.component, command).returncode
+
+
+def cmd_test(args):
+    manifest = load_manifest(args.manifest)
+    forge = _forge(args, manifest)
+    outcomes = forge.test(args.components, ephemeral=args.ephemeral, fail_fast=args.fail_fast)
+    failed = [o for o in outcomes if not o.passed]
+    print()
+    for o in outcomes:
+        status = "PASS" if o.passed else "FAIL"
+        extra = " ({})".format(o.error) if o.error else ""
+        print("  {:<4} {:<20} {:6.1f}s{}".format(status, o.component, o.duration, extra))
+    print("\n{} passed, {} failed".format(len(outcomes) - len(failed), len(failed)))
+    return 1 if failed else 0
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -148,6 +232,34 @@ def build_parser():
     p.add_argument("component")
     p.add_argument("-o", "--output")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("up", help="provision isolated environments (one command)")
+    p.add_argument("components", nargs="*", help="default: all components")
+    p.add_argument("--recreate", action="store_true", help="rebuild even if up to date")
+    p.add_argument("--relock", action="store_true", help="re-resolve first if the lock is stale")
+    p.set_defaults(func=cmd_up)
+
+    p = sub.add_parser("down", help="destroy provisioned environments")
+    p.add_argument("components", nargs="*")
+    p.add_argument("--all", action="store_true")
+    p.set_defaults(func=cmd_down)
+
+    p = sub.add_parser("list", help="list provisioned environments")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("run", help="run a command inside a component's environment")
+    p.add_argument("component")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.add_argument("--relock", action="store_true")
+    p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("test", help="provision and run each component's test command")
+    p.add_argument("components", nargs="*", help="default: all components")
+    p.add_argument("--ephemeral", action="store_true", help="destroy envs after testing (CI)")
+    p.add_argument("--fail-fast", action="store_true")
+    p.add_argument("--relock", action="store_true")
+    p.set_defaults(func=cmd_test)
 
     return parser
 

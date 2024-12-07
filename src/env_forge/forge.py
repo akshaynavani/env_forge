@@ -122,7 +122,7 @@ class EnvForge:
 
     def test(self, names=None, ephemeral=False, fail_fast=False):
         outcomes = []
-        selected = [c.name for c in self.manifest.select(names)] if names else \
+        selected = [self.manifest.component(n).name for n in names] if names else \
             sorted(self.manifest.components)
         for name in selected:
             start = time.time()
