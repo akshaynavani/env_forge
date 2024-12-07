@@ -9,6 +9,9 @@ from env_forge import __version__
 from env_forge import log as logmod
 from env_forge.errors import EnvForgeError
 from env_forge import paths
+from env_forge import doctor
+from env_forge.ci import GENERATORS, get_generator
+from env_forge.ci.affected import affected_components, changed_files
 from env_forge.forge import EnvForge
 from env_forge.manifest import load_manifest
 from env_forge.runner import Runner
@@ -191,6 +194,60 @@ def cmd_test(args):
     return 1 if failed else 0
 
 
+def cmd_ci_generate(args):
+    manifest = load_manifest(args.manifest)
+    providers = args.provider or manifest.ci.get("providers") or ["github"]
+    if isinstance(providers, str):
+        providers = [providers]
+    for name in providers:
+        gen = get_generator(name, manifest)
+        text = gen.render()
+        if args.stdout or args.dry_run:
+            sys.stdout.write(text)
+            continue
+        out = gen.output_path()
+        if os.path.isfile(out) and not args.force:
+            with open(out, "r", encoding="utf-8") as fh:
+                if fh.read() == text:
+                    print("unchanged {}".format(out))
+                    continue
+            if not args.check:
+                raise EnvForgeError("{} exists and differs; pass --force to overwrite".format(out))
+        if args.check:
+            # CI usage: fail if the committed pipeline drifted from the manifest
+            current = open(out, encoding="utf-8").read() if os.path.isfile(out) else ""
+            if current != text:
+                raise EnvForgeError("{} is out of date; run 'envforge ci generate --force'".format(out))
+            continue
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote {}".format(out))
+    return 0
+
+
+def cmd_affected(args):
+    manifest = load_manifest(args.manifest)
+    files = args.files or changed_files(Runner(), manifest.root, args.base, args.head)
+    names = affected_components(manifest, files)
+    if args.json:
+        print(json.dumps(names))
+    else:
+        print("\n".join(names))
+    return 0
+
+
+def cmd_doctor(args):
+    manifest = load_manifest(args.manifest)
+    checks = doctor.run_checks(manifest, Runner())
+    marks = {doctor.OK: "[ok]  ", doctor.WARN: "[warn]", doctor.FAIL: "[FAIL]"}
+    for c in checks:
+        print("{} {:<16} {}".format(marks[c.status], c.name, c.detail))
+    code = doctor.summarize(checks)
+    print("\n" + ("ready to go" if code == 0 else "fix the failures above, then re-run"))
+    return code
+
+
 # --------------------------------------------------------------------------- parser
 
 
@@ -260,6 +317,27 @@ def build_parser():
     p.add_argument("--fail-fast", action="store_true")
     p.add_argument("--relock", action="store_true")
     p.set_defaults(func=cmd_test)
+
+    p = sub.add_parser("ci", help="CI/CD integration")
+    ci_sub = p.add_subparsers(dest="ci_command", metavar="<ci-command>")
+    ci_sub.required = True
+    g = ci_sub.add_parser("generate", help="generate CI pipeline files from the manifest")
+    g.add_argument("--provider", action="append", choices=sorted(GENERATORS),
+                   help="repeatable; default: ci.providers from the manifest")
+    g.add_argument("--stdout", action="store_true", help="print instead of writing files")
+    g.add_argument("--force", action="store_true", help="overwrite existing files")
+    g.add_argument("--check", action="store_true", help="fail if committed files are stale")
+    g.set_defaults(func=cmd_ci_generate)
+
+    p = sub.add_parser("affected", help="list components affected by changes since a git ref")
+    p.add_argument("--base", default="origin/main")
+    p.add_argument("--head", default="HEAD")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("files", nargs="*", help="explicit changed files (skips git diff)")
+    p.set_defaults(func=cmd_affected)
+
+    p = sub.add_parser("doctor", help="check this machine is ready to work on the repo")
+    p.set_defaults(func=cmd_doctor)
 
     return parser
 
