@@ -28,12 +28,15 @@ section "validate manifest"
 section "lockfile check"
 "$ENVFORGE" lock --check
 
-components=("$@")
+components=(${@+"$@"})
 if [[ ${#components[@]} -eq 0 && -n "${CI_AFFECTED_BASE:-}" ]]; then
   section "affected components since ${CI_AFFECTED_BASE}"
   # make sure the base ref exists in shallow clones
   git fetch --quiet --depth=50 origin "${CI_AFFECTED_BASE#origin/}" 2>/dev/null || true
-  mapfile -t components < <("$ENVFORGE" affected --base "$CI_AFFECTED_BASE")
+  components=()
+  while IFS= read -r name; do
+    [[ -n "$name" ]] && components+=("$name")
+  done < <("$ENVFORGE" affected --base "$CI_AFFECTED_BASE")
   if [[ ${#components[@]} -eq 0 ]]; then
     echo "no components affected; nothing to test"
     exit 0
@@ -47,7 +50,7 @@ args=()
 
 section "provision + test"
 status=0
-"$ENVFORGE" test "${args[@]}" "${components[@]}" || status=$?
+"$ENVFORGE" test ${args[@]+"${args[@]}"} ${components[@]+"${components[@]}"} || status=$?
 
 section "summary"
 if [[ -f .envforge/reports/summary.json ]]; then
