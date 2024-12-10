@@ -77,6 +77,7 @@ class VenvProvisioner(Provisioner):
             return
         req_file = os.path.join(record.location, "requirements.lock.txt")
         if not self.runner.dry_run:
+            os.makedirs(record.location, exist_ok=True)
             with open(req_file, "w", encoding="utf-8") as fh:
                 fh.write("\n".join(spec.requirements) + "\n")
         # --no-deps: the lockfile already contains the full transitive closure

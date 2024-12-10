@@ -97,7 +97,7 @@ def test_docker_preflight_requires_daemon(forge):
 
 
 def test_test_reports_failures_and_writes_summary(forge):
-    forge.runner.responses["pytest -q"] = CommandResult(["pytest"], 1)
+    forge.runner.responses["pytest -q --maxfail=1"] = CommandResult(["pytest"], 1)
     outcomes = forge.test(["api", "common"])
     by_name = {o.component: o.passed for o in outcomes}
     assert by_name == {"api": False, "common": True}

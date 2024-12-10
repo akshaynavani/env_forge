@@ -65,7 +65,7 @@ def repo(tmp_path):
             requirements_files: [requirements.txt]
             env: {APP_ENV: test}
             setup: ["python -m compileall -q ."]
-            test: "pytest -q"
+            test: "pytest -q --maxfail=1"
           worker:
             path: services/worker
             provisioner: docker
